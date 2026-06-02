@@ -35,6 +35,7 @@ UNIVERSE = [
 # The live field — file -> (display name, label). House/reference bots set the
 # bar; real Round 1 entrants are labeled as such, never disguised as house bots.
 FIELD = [
+    ("drawdown_momentum.py",         "drawdown-momentum",      "house · the bar to beat"),
     ("seed_dual_momentum.py",        "dual-momentum-rotation", "house · all-weather"),
     ("ai_momentum.py",               "ai-momentum-basket",     "house · aggressive"),
     ("example_sector_rotation.py",   "sector-rotation",        "reference"),
