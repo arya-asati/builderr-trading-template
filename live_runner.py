@@ -68,6 +68,7 @@ FIELD = [
     ("arnav_agent.py",               "arnav",                  "round 1 · entrant"),
     ("nagarjuna_agent.py",           "nagarjuna",              "round 1 · entrant"),
     ("balaji_agent.py",              "balaji",                 "round 1 · entrant"),
+    ("ajai_agent.py",                "ajai",                   "round 1 · entrant"),
 ]
 
 # Private entrants (read-only deploy-key path). Their CODE never enters this
