@@ -54,6 +54,7 @@ class InstitutionalAlphaEngine:
             current_price = closes[-1]
             prices_series = pd.Series(closes)
 
+            # --- CORE TREND INDICATORS ---
             ema_9 = prices_series.ewm(span=9, adjust=False).mean().to_numpy()[-1]
             ema_50 = prices_series.ewm(span=50, adjust=False).mean().to_numpy()[-1]
             
@@ -62,6 +63,7 @@ class InstitutionalAlphaEngine:
             else:
                 ema_macro = ema_50
 
+            # --- VOLATILITY & VOLUME ---
             hl = highs - lows
             hc = np.abs(highs - np.roll(closes, 1))
             lc = np.abs(lows - np.roll(closes, 1))
@@ -77,24 +79,51 @@ class InstitutionalAlphaEngine:
             if np.isnan(v_sma_20): v_sma_20 = volumes[-1]
             if np.isnan(v_sma_10): v_sma_10 = volumes[-1]
 
+            # --- NEW: MOMENTUM & OSCILLATOR CONFIRMATIONS ---
+            # 1. 5-Day Momentum Lookback
+            returns = prices_series.pct_change()
+            momentum = returns.tail(5).mean()
+            if np.isnan(momentum): momentum = 0.0
+
+            # 2. 14-Period RSI
+            delta = prices_series.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / (loss + 1e-6)
+            rsi_series = 100 - (100 / (1 + rs))
+            rsi_val = rsi_series.to_numpy()[-1]
+            if np.isnan(rsi_val): rsi_val = 50.0
+
+            # --- REGIME CALCULATION ---
             hurst_val = cls.calculate_hurst_exponent(closes[-30:])
 
-            # --- ROUTING ENGINE ---
-            if hurst_val > 0.52:  # Trend Following
-                if current_price > ema_macro:
-                    if current_price > ema_9 and ema_9 > ema_50:
-                        if volumes[-1] > (1.1 * v_sma_20): return "BUY"
-                if current_price < ema_50: return "SELL"
+            # --- OPTIMIZED ROUTING ENGINE ---
+            # Thresholds widened to 0.55/0.45 to shield against noisy sideways chops
+            if hurst_val > 0.55:  # Strong Trend-Following Regime
+                if current_price > ema_macro and momentum > 0 and rsi_val < 75:
+                    if current_price > ema_9 or volumes[-1] > v_sma_20: 
+                        return "BUY"
+                if current_price < ema_50 or momentum < 0 or rsi_val > 80: 
+                    return "SELL"
 
-            elif hurst_val < 0.48:  # Mean Reversion
+            elif hurst_val < 0.45:  # Clear Mean-Reversion Range Regime
                 rolling_mean = prices_series.rolling(window=20).mean().to_numpy()[-1]
                 if np.isnan(rolling_mean): rolling_mean = current_price
                 
                 lower_liquidity_floor = rolling_mean - (1.5 * atr)
                 upper_liquidity_ceiling = rolling_mean + (1.5 * atr)
 
-                if current_price <= lower_liquidity_floor and volumes[-1] < v_sma_10: return "BUY"
-                if current_price >= upper_liquidity_ceiling: return "SELL"
+                if (current_price <= lower_liquidity_floor or rsi_val < 32) and momentum <= 0: 
+                    return "BUY"
+                if current_price >= upper_liquidity_ceiling or rsi_val > 68: 
+                    return "SELL"
+            
+            else:  # Neutral/Pivot Regime (Prevents staying stuck in HOLD)
+                # Take selective momentum breakouts or capitalize on deep overextended states
+                if rsi_val < 28 or (current_price > ema_50 and momentum > 0.0015):
+                    return "BUY"
+                if rsi_val > 72 or (current_price < ema_50 and momentum < -0.0015):
+                    return "SELL"
 
             return "HOLD"
         except Exception:
