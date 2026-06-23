@@ -66,35 +66,29 @@ class InstitutionalAlphaEngine:
 
             hurst_val = cls.calculate_hurst_exponent(closes[-30:])
 
-            # --- PROTECTIVE UPGRADE: Tightened regimes and multi-layered exits ---
-            if hurst_val > 0.55:  # Trend Regime
-                if current_price > ema_100 and momentum > 0 and rsi_val < 75:
-                    if current_price > ema_9:
-                        metrics["signal"] = "BUY"
-                        metrics["alpha_score"] = float(momentum * 100.0)
-                # Exit sharply if price drops below EMA 50, near-term breaks EMA 9 by 2%, or overbought
-                elif current_price < ema_50 or current_price < (ema_9 * 0.98) or rsi_val > 78:
+            # ================= COMEBACK UPGRADE: OPTIMIZED REGIMES =================
+            if hurst_val >= 0.48:  # Trend & Velocity Expansion Mode
+                # Buy when asset is structurally sound (above EMA 50) and building upward velocity
+                if current_price > ema_50 and momentum > -0.001 and rsi_val < 78:
+                    metrics["signal"] = "BUY"
+                    # Weight score by structural momentum strength to capture explosive runners
+                    metrics["alpha_score"] = float((momentum * 100.0) + (rsi_val * 0.05))
+                # Indicator sell only on true macro trend breakdowns (below EMA 100) or massive overbought peaks
+                elif current_price < ema_100 or rsi_val > 85:
                     metrics["signal"] = "SELL"
 
-            elif hurst_val < 0.45:  # Mean-Reversion Regime
+            else:  # Mean-Reversion / High-Volatility Oscillating Mode
                 rolling_mean = prices_series.rolling(window=20).mean().to_numpy()[-1]
-                lower_floor = rolling_mean - (1.5 * atr)
-                upper_ceiling = rolling_mean + (1.5 * atr)
+                lower_floor = rolling_mean - (1.1 * atr)  # Widened boundary from 1.5 to capture turns faster
+                upper_ceiling = rolling_mean + (1.3 * atr)
 
-                if current_price <= lower_floor or rsi_val < 32:
+                if current_price <= lower_floor or rsi_val < 38:
                     metrics["signal"] = "BUY"
                     metrics["alpha_score"] = float(100.0 - rsi_val)
-                # Exit at ceiling, high RSI, or if it breaks down past the lower floor (failed mean reversion)
-                elif current_price >= upper_ceiling or rsi_val > 68 or current_price < (lower_floor * 0.96):
+                # Take profit when tagging the ceiling or overextended
+                elif current_price >= upper_ceiling or rsi_val > 72:
                     metrics["signal"] = "SELL"
             
-            else:  # Pivot / Transitional Regime
-                if rsi_val < 26:
-                    metrics["signal"] = "BUY"
-                    metrics["alpha_score"] = float(50.0 - rsi_val)
-                elif rsi_val > 74:
-                    metrics["signal"] = "SELL"
-
             return metrics
         except Exception:
             return metrics
@@ -153,14 +147,12 @@ def decide(market_state: dict, portfolio_state: dict, cash: float) -> list:
 
                 qty_held = current_positions.get(ticker, 0.0)
 
-                # --- ADVANCED RISK UPGRADE: Stateless Trailing Stop Floor ---
+                # --- UNTOUCHED SAFETY NET: Stateless 4% Trailing Stop Floor ---
                 if qty_held > 0 and len(bars) >= 10:
                     closes_lookback = df[close_key].to_numpy(dtype=float)
-                    # Track structural maximum over historical execution cycle (up to 45 periods)
                     lookback_window = min(len(closes_lookback), 45)
                     structural_peak = float(np.max(closes_lookback[-lookback_window:]))
                     
-                    # Emergency liquidation if asset violates a strict 4% trailing drawdown floor from its peak
                     if current_price < (structural_peak * 0.96):
                         orders.append({"ticker": str(ticker), "side": "sell", "quantity": int(qty_held)})
                         current_gross_exposure -= (qty_held * current_price)
@@ -185,10 +177,9 @@ def decide(market_state: dict, portfolio_state: dict, cash: float) -> list:
                 continue
 
         # 3. Aggressive Capital Deployment & Leverage Optimization Layer
-        # Hard restriction ceiling remains fixed at 1.42x NAV to strictly comply with the 1.5x limit
         max_absolute_exposure = total_portfolio_value * 1.42
         
-        # ALPHA UPGRADE: Restrict diversification to the top 3 high-conviction assets to drive faster recovery
+        # Keep concentration tightly locked to the top 3 high-conviction assets to force max upward velocity
         buy_candidates = sorted(buy_candidates, key=lambda x: x["score"], reverse=True)[:3]
 
         for candidate in buy_candidates:
@@ -202,10 +193,9 @@ def decide(market_state: dict, portfolio_state: dict, cash: float) -> list:
                 atr_pct = candidate["atr_pct"]
                 qty_held = candidate["qty_held"]
 
-                # ALPHA UPGRADE: Risk scaling coefficient elevated from 0.02 to 0.035 for enhanced size execution
+                # High-conviction risk coefficient retained at 0.035 for powerful target executions
                 base_allocation = total_portfolio_value * (0.035 / (atr_pct + 1e-5))
                 
-                # Allocation boundaries ensuring cash preservation and concentration caps
                 target_spend = min(base_allocation, total_portfolio_value * 0.22, available_cash * 0.45, remaining_leverage_room)
                 max_allowed_spend = (total_portfolio_value * 0.30) - (qty_held * price)
                 
