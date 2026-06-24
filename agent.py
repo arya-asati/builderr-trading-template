@@ -18,7 +18,10 @@ class InstitutionalAlphaEngine:
                 std_dev = np.std(diffs)
                 variances.append(std_dev if std_dev > 0 else 1e-6)
             poly = np.polyfit(np.log(lags), np.log(variances), 1)
-            return float(np.clip(poly[0] * 2.0, 0.0, 1.0))
+            
+            # CRITICAL FIX: Removed the artificial '* 2.0' multiplier. 
+            # poly[0] correctly represents the true Hurst Exponent.
+            return float(np.clip(poly[0], 0.0, 1.0))
         except Exception: 
             return 0.50
 
@@ -42,7 +45,8 @@ class InstitutionalAlphaEngine:
             metrics["price"] = current_price
             prices_series = pd.Series(closes)
 
-            ema_9 = prices_series.ewm(span=9, adjust=False).mean().to_numpy()[-1]
+            # Technical Indicators
+            ema_25 = prices_series.ewm(span=25, adjust=False).mean().to_numpy()[-1]
             ema_50 = prices_series.ewm(span=50, adjust=False).mean().to_numpy()[-1]
             ema_100 = prices_series.ewm(span=100, adjust=False).mean().to_numpy()[-1] if len(closes) >= 100 else ema_50
 
@@ -64,28 +68,29 @@ class InstitutionalAlphaEngine:
             rsi_val = rsi.to_numpy()[-1]
             if np.isnan(rsi_val): rsi_val = 50.0
 
+            # Calculate precise Hurst over the last 30 bars
             hurst_val = cls.calculate_hurst_exponent(closes[-30:])
 
-            # ================= COMEBACK UPGRADE: OPTIMIZED REGIMES =================
-            if hurst_val >= 0.48:  # Trend & Velocity Expansion Mode
-                # Buy when asset is structurally sound (above EMA 50) and building upward velocity
-                if current_price > ema_50 and momentum > -0.001 and rsi_val < 78:
+            # ================= HIGH-FREQUENCY REGIME EXECUTION =================
+            if hurst_val >= 0.52:  # True Trend Mode
+                # Aggressive trend entry targeting faster short-term exponential bursts
+                if current_price > ema_25 and momentum > -0.002 and rsi_val < 80:
                     metrics["signal"] = "BUY"
-                    # Weight score by structural momentum strength to capture explosive runners
                     metrics["alpha_score"] = float((momentum * 100.0) + (rsi_val * 0.05))
-                # Indicator sell only on true macro trend breakdowns (below EMA 100) or massive overbought peaks
+                # Protect capital on structural macro breakdowns or extreme peaks
                 elif current_price < ema_100 or rsi_val > 85:
                     metrics["signal"] = "SELL"
 
             else:  # Mean-Reversion / High-Volatility Oscillating Mode
                 rolling_mean = prices_series.rolling(window=20).mean().to_numpy()[-1]
-                lower_floor = rolling_mean - (1.1 * atr)  # Widened boundary from 1.5 to capture turns faster
-                upper_ceiling = rolling_mean + (1.3 * atr)
+                lower_floor = rolling_mean - (1.1 * atr)  
+                upper_ceiling = rolling_mean + (1.2 * atr)
 
-                if current_price <= lower_floor or rsi_val < 38:
+                # Relaxed entry requirements to force high-frequency fill rates on local dips
+                if current_price <= lower_floor or rsi_val < 40:
                     metrics["signal"] = "BUY"
                     metrics["alpha_score"] = float(100.0 - rsi_val)
-                # Take profit when tagging the ceiling or overextended
+                # Quick profit-taking when hitting upper boundaries
                 elif current_price >= upper_ceiling or rsi_val > 72:
                     metrics["signal"] = "SELL"
             
@@ -119,7 +124,7 @@ def decide(market_state: dict, portfolio_state: dict, cash: float) -> list:
                 except Exception:
                     continue
 
-        # Calculate exact Net Asset Value (NAV) and starting Gross Exposure
+        # Calculate exact Net Asset Value (NAV) and Gross Exposure
         for ticker, qty in current_positions.items():
             if ticker in active_prices:
                 pos_value = qty * active_prices[ticker]
@@ -129,7 +134,7 @@ def decide(market_state: dict, portfolio_state: dict, cash: float) -> list:
         available_cash = float(cash)
         buy_candidates = []
 
-        # 2. Extract Closures, Risk Triggers, and Safety Liquidations
+        # 2. Risk Management Framework & Liquidations
         for ticker, bars in market_state.items():
             if not bars or len(bars) < 30:
                 continue
@@ -147,7 +152,7 @@ def decide(market_state: dict, portfolio_state: dict, cash: float) -> list:
 
                 qty_held = current_positions.get(ticker, 0.0)
 
-                # --- UNTOUCHED SAFETY NET: Stateless 4% Trailing Stop Floor ---
+                # --- 4% Trailing Stop Hard Floor ---
                 if qty_held > 0 and len(bars) >= 10:
                     closes_lookback = df[close_key].to_numpy(dtype=float)
                     lookback_window = min(len(closes_lookback), 45)
@@ -157,7 +162,7 @@ def decide(market_state: dict, portfolio_state: dict, cash: float) -> list:
                         orders.append({"ticker": str(ticker), "side": "sell", "quantity": int(qty_held)})
                         current_gross_exposure -= (qty_held * current_price)
                         available_cash += (qty_held * current_price)
-                        continue  # Exit processed, pass to next asset
+                        continue  # Exit complete, skip standard indicator checks
 
                 # Standard Indicator-based Liquidations
                 if analysis["signal"] == "SELL" and qty_held > 0:
@@ -176,10 +181,10 @@ def decide(market_state: dict, portfolio_state: dict, cash: float) -> list:
             except Exception:
                 continue
 
-        # 3. Aggressive Capital Deployment & Leverage Optimization Layer
+        # 3. Capital Deployment & Sizing Matrix (Max 1.42x Leverage)
         max_absolute_exposure = total_portfolio_value * 1.42
         
-        # Keep concentration tightly locked to the top 3 high-conviction assets to force max upward velocity
+        # Concentrate only on top 3 highest-ranking assets to maximize velocity
         buy_candidates = sorted(buy_candidates, key=lambda x: x["score"], reverse=True)[:3]
 
         for candidate in buy_candidates:
@@ -193,9 +198,10 @@ def decide(market_state: dict, portfolio_state: dict, cash: float) -> list:
                 atr_pct = candidate["atr_pct"]
                 qty_held = candidate["qty_held"]
 
-                # High-conviction risk coefficient retained at 0.035 for powerful target executions
+                # Risk-adjusted position sizing using a aggressive 0.035 coefficient
                 base_allocation = total_portfolio_value * (0.035 / (atr_pct + 1e-5))
                 
+                # Strict multi-layer boundary conditions
                 target_spend = min(base_allocation, total_portfolio_value * 0.22, available_cash * 0.45, remaining_leverage_room)
                 max_allowed_spend = (total_portfolio_value * 0.30) - (qty_held * price)
                 
